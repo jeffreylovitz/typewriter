@@ -60,3 +60,15 @@ B) Struct definitions, which are returned with nothing elided (as names are requ
 All output is printed without adornment to STDOUT, and may be piped to file or into another function as desired.
 
 The fundamental purpose of this transformation is to act as an interim step in automating the construction of Ruby FFI bindings for C programs.
+
+Currently not implemented:
+- Support for enums (though their presence does not break the program)
+- Retrieving the type of `struct x{int i;}` - Typewriter will only capture a typedef alias.
+- the correct type of fixed-size variable declarations:
+```
+char outcome_category[1024];
+```
+will be converted to
+```
+"outcome_category[1024]":"char"
+```

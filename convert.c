@@ -17,64 +17,88 @@ static void append(char *line, char *token, int needs_space) {
   }
 }
 
+// This function *directly modifies* its inputs.
+// It returns 1 if the 'next' token was modified and 0 otherwise.
+static int fix_asterisks(char *current, char **next) {
+  // We are pointing at the last character in the string
+  int tok_len = strlen(current);
+  int asterisk_index = tok_len - 1;
+  char *modified = *next;
+  // Check the current token for trailing asterisks
+  // to print here
+  while (current[asterisk_index] == '*') {
+    current[tok_len - 1] = ' ';
+    current[tok_len] = '*';
+    current[tok_len + 1] = '\0';
+    tok_len += 2;
+    asterisk_index --;
+  }
+
+  // Check the function name for leading asterisks
+  // to print here, incrementing the token start as needed
+  while (**next == '*') {
+    current[tok_len ++] = ' ';
+    current[tok_len ++] = '*';
+    (*next) ++;
+  }
+  current[tok_len] = '\0';
+
+  return (modified != *next);
+}
 // This function is just used to parse and print the relevant pieces of function signatures
-static JsonNode* process_function_signature(char **token_ptrs, tok_type *types, int count) {
+static JsonNode* parse_function_signature(char **token_ptrs, tok_type *types, int count) {
   JsonNode *func = json_mkobject();
-  JsonNode *args = NULL;
-  int i;
-  int last_start = 0;
+  int last_start, i = 0;
   char str[1000];
-  for (i = 0; i < count; i ++) {
-    if (types[i] == FUNC_NAME) {
-      json_append_member(func, "Function", json_mkstring(token_ptrs[i]));
-      str[0] = '\0';
-      for (; last_start < i; last_start ++) {
-        while (types[last_start] == TYPE) {
-          // Parse a type, which may consist of multiple words
-          if (!should_skip_token(token_ptrs[last_start])) {
-            append(str, token_ptrs[last_start], last_start < i - 1);
-            // strcat(str, token_ptrs[last_start]);
-            // strcat(str, " ");
-          }
-          // Can combine this shit with the loop
-          last_start ++;
-        }
-      }
-      // Skip trailing spaces
-      str[strlen(str)] = '\0';
-      // Check the next token for leading asterisks
-      // to print here, incrementing the token start as needed
-      while (*token_ptrs[i + 1] == '*') {
-        strcat(str, "*");
-        token_ptrs[i + 1] ++;
-      }
-      json_append_member(func, "return_type", json_mkstring(str));
-      break;
+  str[0] = '\0';
+
+  while (types[i] != FUNC_NAME) i ++;
+
+  // We iterate from the 1st token up to the FUNC_NAME (all return type tokens)
+  for (last_start = 0; last_start < i; last_start ++) {
+    if (types[last_start] != TYPE) {
+      fprintf(stderr, "Error in parsing function `%s` - expected `%s` to be a type",
+          token_ptrs[i], token_ptrs[last_start]);
+    }
+
+    // Parse a type, which may consist of multiple words
+    if (!should_skip_token(token_ptrs[last_start])) {
+      append(str, token_ptrs[last_start], last_start < i - 1);
     }
   }
 
-  i ++;
-  int types_start = i;
-  // Do we have arguments passed to this function?
-  if (i < count - 1) args = json_mkarray();
+  // Retrieve any leading asterisks from the function name to append to our return
+  fix_asterisks(str, token_ptrs + i);
+  json_append_member(func, "function", json_mkstring(token_ptrs[i]));
+  json_append_member(func, "return_type", json_mkstring(str));
+
+  last_start = ++ i;
+  // If there is only one token in the arguments, it must be `void`, which we can
+  // safely ignore
+  if (i >= count - 1) return func;
+
+  JsonNode *args = json_mkarray();
+
   for (; i < count; i ++) {
+    if (types[i] != VAR_NAME) continue;
+
     str[0] = '\0';
-    if (types[i] == VAR_NAME) {
-      for (; types_start < i; types_start ++) {
-        append(str, token_ptrs[types_start], types_start < i - 1);
-        // strcat(str, token_ptrs[types_start]);
-        // strcat(str, " ");
-      }
-      // Check the next token for leading asterisks
-      // to print here, incrementing the token start as needed
-      while (*token_ptrs[i] == '*') {
-        strcat(str, "*");
-        token_ptrs[i] ++;
-      }
-      if (args) json_append_element(args, json_mkstring(str));
+
+    // Concatenate all the types for this argument
+    for (; last_start < i; last_start ++) {
+      append(str, token_ptrs[last_start], last_start < i - 1);
     }
+    // Check the next token for leading asterisks
+    // to print here, incrementing the token start as needed
+    // (though in this case, we do not actually care about the next token)
+    fix_asterisks(str, token_ptrs + i);
+
+    // We increment `last_start` so that it is not pointing to this token
+    // (a VAR_NAME)
+    last_start ++;
+    json_append_element(args, json_mkstring(str));
   }
-  if (args) json_append_member(func, "arguments", args);
+  json_append_member(func, "arguments", args);
   return func;
 }
 
@@ -95,20 +119,25 @@ static JsonNode* parse_struct(char **token_ptrs, tok_type *token_types, int coun
     if (token_types[j] == VAR_NAME) {
       // We initialize this to the last character to overwrite
       // the trailing space
+      // TODO update this to use the `fix_asterisks` function
       asterisk_ind = strlen(str) - 1;
-      while(*token_ptrs[j] == '*') {
-        str[asterisk_ind] = '*';
-        asterisk_ind ++;
-        token_ptrs[j] ++;
+      if(*token_ptrs[j] == '*') {
+        // But if we actually have asterisks, we want that space - they will
+        // then print out as though they are separate tokens in a type
+        // (although if we want to manipulate each type token, this is not sufficient)
+        while(*token_ptrs[j] == '*') {
+          str[++ asterisk_ind]= '*';
+          str[++ asterisk_ind] = ' ';
+          token_ptrs[j] ++;
+        }
       }
       str[asterisk_ind] = '\0';
 
-      // Can this be done outside?
+      // TODO Can this be done outside?
       pair = json_mkobject();
       json_append_member(pair, token_ptrs[j], json_mkstring(str));
       json_append_element(args, pair);
       str[0] = '\0';
-      continue;
     } else {
       if (should_skip_token(token_ptrs[j])) continue;
       // Accumulate the type pieces of the member
@@ -116,9 +145,8 @@ static JsonNode* parse_struct(char **token_ptrs, tok_type *token_types, int coun
       strcat(str, " ");
     }
   }
-  json_append_member(obj, "Type_Name", json_mkstring(token_ptrs[count - 1]));
-  json_append_member(obj, "Members", args);
-  str[0] = '\0';
+  json_append_member(obj, "type_name", json_mkstring(token_ptrs[count - 1]));
+  json_append_member(obj, "members", args);
 
   return obj;
 }
@@ -175,7 +203,8 @@ static int process_input(FILE *header, JsonNode *json) {
       if (index == 0) continue;
       // Consume all characters to EOL if we have encountered a comment
       if (cur == '/' && tokens[index - 1] == '/') {
-        tokens[index - 1] = '\0';
+        tokens[-- index] = '\0';
+        in_tok = 0;
         while((cur = fgetc(header)) != '\n') {}
       }
 
@@ -206,9 +235,7 @@ static int process_input(FILE *header, JsonNode *json) {
       // Faulty assumption - parens for casts, etc
       token_types[count - 1] = FUNC_NAME;
       in_func = 1;
-      // TODO untrue with inline, extern, etc - we should just check the first few tokens
-      // before printing and skip them until we find a real TYPE. or can overwrite them
-      // in the arrays here
+      // Not necessarily true, but we have a list of tokens (extern, inline, etc) that will be skipped later
       for (i = 0; i < count - 1; i ++) token_types[i] = TYPE;
       continue;
     }
@@ -239,7 +266,7 @@ static int process_input(FILE *header, JsonNode *json) {
       token_types[count - 1] = VAR_NAME;
       // We will probably need more conditionals on this case
       if (in_func) {
-        ret = process_function_signature(token_ptrs, token_types, count);
+        ret = parse_function_signature(token_ptrs, token_types, count);
         if (funcs == NULL) {
           funcs = json_mkarray();
         }
@@ -291,24 +318,16 @@ int main(int argc, char **argv) {
   }
 
   JsonNode *json = json_mkobject();
-  /*
-     json_append_member(json, "Function", json_mkstring("func_name"));
-
-     JsonNode *types = json_mkarray();
-     json_append_element(types, json_mkstring("int"));
-     json_append_element(types, json_mkstring("char*"));
-     json_append_element(types, json_mkstring("char*"));
-     json_append_member(json, "Types", types);
-
-*/
-  // JsonNode *funcs = json_mkarray();
-
-
 
   process_input(header, json);
 
   char *json_out = json_encode(json);
+
+  // Prints tradtional compressed JSON
   printf("%s\n", json_out);
+
+  // Prints JSON with whitespace
+  printf("%s\n", json_stringify(json, " "));
 
   fclose(header);
 
